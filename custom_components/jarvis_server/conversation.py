@@ -45,6 +45,11 @@ class ExternalConversationAgent(ConversationEntity):
         # Unique entity id stability across updates
         self._attr_unique_id = f"{DOMAIN}.external_agent"
 
+    @property
+    def supported_languages(self):
+        # Accept all languages
+        return "*"
+
     async def async_prepare(self, language: str | None = None) -> None:
         """Optional warm-up hook."""
         return
