@@ -1,124 +1,143 @@
+"""Conversation agent that forwards user text to an external HTTP server (LAN)."""
 
 from __future__ import annotations
 
 import asyncio
-from aiohttp import ClientError
+import logging
+from dataclasses import dataclass
+from typing import Any, Literal
 
-from homeassistant.components.conversation import (
-    AssistantContent,
-    ChatLog,
-    ConversationEntity,
-    ConversationEntityFeature,
-    ConversationInput,
-    ConversationResult,
-    ConversationResponse,
-)
+import aiohttp
+
+from homeassistant.components.conversation import ChatLog, ConversationEntity
+from homeassistant.components.conversation.chat_log import AssistantContent
+from homeassistant.components.conversation.models import ConversationInput, ConversationResult
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_API_KEY, CONF_BASE_URL, DEFAULT_TIMEOUT_SECONDS, DOMAIN
+_LOGGER = logging.getLogger(__name__)
+
+DOMAIN = "jarvis_server"
+
+# If you already have these in const.py, feel free to import them instead.
+CONF_SERVER_URL = "server_url"
+DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    async_add_entities([ExternalConversationAgent(hass, entry)])
+    """Set up the conversation entity from a config entry."""
+    async_add_entities([JarvisServerConversationAgent(hass, entry)])
 
 
-class ExternalConversationAgent(ConversationEntity):
-    """A Conversation agent that forwards user text to an external HTTP server."""
+@dataclass(frozen=True)
+class _ServerReply:
+    text: str
+
+
+class JarvisServerConversationAgent(ConversationEntity):
+    """A conversation entity that forwards text to an external server."""
 
     _attr_has_entity_name = True
-    _attr_name = "External Agent"
-    _attr_supported_features = ConversationEntityFeature.CONTROL
+    _attr_name = "Jarvis Server"
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
+
+        # Unique ID is important so HA can track the entity correctly.
+        self._attr_unique_id = f"{entry.entry_id}_conversation"
+
         self._session = async_get_clientsession(hass)
-
-        self._base_url: str = entry.data[CONF_BASE_URL].rstrip("/")
-        self._api_key: str = entry.data.get(CONF_API_KEY, "") or ""
-
-        # Stable unique id across updates
-        self._attr_unique_id = f"{DOMAIN}.external_agent"
+        self._server_url: str = (entry.data.get(CONF_SERVER_URL) or DEFAULT_SERVER_URL).rstrip("/")
 
     @property
-    def supported_languages(self):
-        # Accept all languages
-        return "*"
+    def supported_languages(self) -> list[str] | Literal["*"]:
+        """Return supported languages.
 
-    async def async_prepare(self, language: str | None = None) -> None:
-        """Optional warm-up hook."""
-        return
+        Return "*" to support all languages (HA will still provide user_input.language).
+        """
+        return "*"
 
     async def _async_handle_message(
         self,
         user_input: ConversationInput,
         chat_log: ChatLog,
     ) -> ConversationResult:
-        headers: dict[str, str] = {}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        """Handle the incoming message and return a ConversationResult."""
+        try:
+            reply = await self._call_server(user_input, chat_log)
+            speech_text = reply.text
 
-        payload = {
+            # Add assistant message to chat log (so multi-turn + UI history works nicely).
+            chat_log.async_add_assistant_content_without_tools(
+                AssistantContent(
+                    agent_id=user_input.agent_id,
+                    content=speech_text,
+                )
+            )
+
+            resp = intent.IntentResponse(language=user_input.language)
+            resp.async_set_speech(speech_text)
+
+            return ConversationResult(
+                conversation_id=user_input.conversation_id,
+                response=resp,
+                continue_conversation=False,
+            )
+
+        except Exception as e:  # noqa: BLE001 - we want a safe catch-all for voice UX
+            _LOGGER.exception("Jarvis Server error while handling message: %s", e)
+            return self._error_result(user_input, chat_log, f"Could not reach the server ({type(e).__name__}).")
+
+    async def _call_server(self, user_input: ConversationInput, chat_log: ChatLog) -> _ServerReply:
+        """Send the user text to the external server and return the reply."""
+        # You can change the endpoint/path as you like.
+        url = f"{self._server_url}/converse"
+
+        payload: dict[str, Any] = {
             "text": user_input.text,
-            "language": getattr(user_input, "language", None),
+            "language": user_input.language,
             "conversation_id": user_input.conversation_id,
-            "source": "home_assistant",
+            "agent_id": user_input.agent_id,
         }
 
-        url = f"{self._base_url}/chat"
+        timeout = aiohttp.ClientTimeout(total=15)
 
-        try:
-            async with asyncio.timeout(DEFAULT_TIMEOUT_SECONDS):
-                resp = await self._session.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = await resp.json()
-        except TimeoutError:
-            return self._error_result(user_input, chat_log, "The server timed out.")
-        except ClientError as e:
-            return self._error_result(
-                user_input, chat_log, f"Could not reach the server ({type(e).__name__})."
-            )
-        except Exception:
-            # Avoid crashing Assist on unexpected server replies
-            return self._error_result(user_input, chat_log, "Unexpected server error.")
+        async with self._session.post(url, json=payload, timeout=timeout) as r:
+            # Raise on non-2xx so we end up in the standard error path.
+            r.raise_for_status()
 
-        reply: str = str(data.get("reply", "")).strip()
-        if not reply:
-            return self._error_result(
-                user_input, chat_log, "Server returned an empty reply."
-            )
+            data = await r.json()
 
-        continue_conv: bool = bool(data.get("continue", False))
-        conversation_id: str = str(data.get("conversation_id", user_input.conversation_id))
+        # Expect either {"text": "..."} or {"response": "..."} (accept both).
+        text = (data.get("text") or data.get("response") or "").strip()
+        if not text:
+            text = "Ok, Jarvis will help"
 
-        # Add assistant message to the chat log (no tool calls for v1)
+        return _ServerReply(text=text)
+
+    def _error_result(self, user_input: ConversationInput, chat_log: ChatLog, message: str) -> ConversationResult:
+        """Return an error result that HA can speak."""
+        # Add an assistant message to history (useful for debugging in UI).
         chat_log.async_add_assistant_content_without_tools(
-            AssistantContent(agent_id=user_input.agent_id, content=reply)
+            AssistantContent(
+                agent_id=user_input.agent_id,
+                content=message,
+            )
         )
+
+        resp = intent.IntentResponse(language=user_input.language)
+        resp.async_set_speech(message)
 
         return ConversationResult(
-            response=ConversationResponse(speech=reply),
-            conversation_id=conversation_id,
-            continue_conversation=continue_conv,
-        )
-
-    def _error_result(
-        self,
-        user_input: ConversationInput,
-        chat_log: ChatLog,
-        message: str,
-    ) -> ConversationResult:
-        chat_log.async_add_assistant_content_without_tools(
-            AssistantContent(agent_id=user_input.agent_id, content=message)
-        )
-        return ConversationResult(
-            response=ConversationResponse(speech=message),
             conversation_id=user_input.conversation_id,
+            response=resp,
             continue_conversation=False,
         )
