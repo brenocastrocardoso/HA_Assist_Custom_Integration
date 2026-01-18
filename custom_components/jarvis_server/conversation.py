@@ -1,15 +1,17 @@
+
 from __future__ import annotations
 
 import asyncio
 from aiohttp import ClientError
 
-from homeassistant.components import intent
 from homeassistant.components.conversation import (
     AssistantContent,
     ChatLog,
     ConversationEntity,
     ConversationEntityFeature,
     ConversationInput,
+    ConversationResult,
+    ConversationResponse,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -32,7 +34,6 @@ class ExternalConversationAgent(ConversationEntity):
     _attr_has_entity_name = True
     _attr_name = "External Agent"
     _attr_supported_features = ConversationEntityFeature.CONTROL
-    _attr_supported_languages = "*"  # or ["en", "pt-BR"]
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -42,7 +43,7 @@ class ExternalConversationAgent(ConversationEntity):
         self._base_url: str = entry.data[CONF_BASE_URL].rstrip("/")
         self._api_key: str = entry.data.get(CONF_API_KEY, "") or ""
 
-        # Unique entity id stability across updates
+        # Stable unique id across updates
         self._attr_unique_id = f"{DOMAIN}.external_agent"
 
     @property
@@ -58,14 +59,14 @@ class ExternalConversationAgent(ConversationEntity):
         self,
         user_input: ConversationInput,
         chat_log: ChatLog,
-    ) -> intent.ConversationResult:
+    ) -> ConversationResult:
         headers: dict[str, str] = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
         payload = {
             "text": user_input.text,
-            "language": user_input.language,
+            "language": getattr(user_input, "language", None),
             "conversation_id": user_input.conversation_id,
             "source": "home_assistant",
         }
@@ -101,12 +102,9 @@ class ExternalConversationAgent(ConversationEntity):
             AssistantContent(agent_id=user_input.agent_id, content=reply)
         )
 
-        response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(reply)
-
-        return intent.ConversationResult(
+        return ConversationResult(
+            response=ConversationResponse(speech=reply),
             conversation_id=conversation_id,
-            response=response,
             continue_conversation=continue_conv,
         )
 
@@ -115,14 +113,12 @@ class ExternalConversationAgent(ConversationEntity):
         user_input: ConversationInput,
         chat_log: ChatLog,
         message: str,
-    ) -> intent.ConversationResult:
+    ) -> ConversationResult:
         chat_log.async_add_assistant_content_without_tools(
             AssistantContent(agent_id=user_input.agent_id, content=message)
         )
-        response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(message)
-        return intent.ConversationResult(
+        return ConversationResult(
+            response=ConversationResponse(speech=message),
             conversation_id=user_input.conversation_id,
-            response=response,
             continue_conversation=False,
         )
