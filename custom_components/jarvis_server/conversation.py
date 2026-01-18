@@ -18,13 +18,10 @@ from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+
+from .const import DOMAIN, CONF_BASE_URL
+
 _LOGGER = logging.getLogger(__name__)
-
-DOMAIN = "jarvis_server"
-
-# If you already have these in const.py, feel free to import them instead.
-CONF_BASE_URL = "server_url"
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
