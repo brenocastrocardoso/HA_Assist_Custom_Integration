@@ -23,8 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "jarvis_server"
 
 # If you already have these in const.py, feel free to import them instead.
-CONF_SERVER_URL = "server_url"
-DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
+CONF_BASE_URL = "server_url"
 
 
 async def async_setup_entry(
@@ -55,7 +54,7 @@ class JarvisServerConversationAgent(ConversationEntity):
         self._attr_unique_id = f"{entry.entry_id}_conversation"
 
         self._session = async_get_clientsession(hass)
-        self._server_url: str = (entry.data.get(CONF_SERVER_URL) or DEFAULT_SERVER_URL).rstrip("/")
+        self._server_url: str = entry.data.get(CONF_BASE_URL).rstrip("/")
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
