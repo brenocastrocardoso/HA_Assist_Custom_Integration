@@ -1,0 +1,10 @@
+{
+  "domain": "jarvis_server",
+  "name": "Jarvis Server",
+  "version": "0.1.0",
+  "documentation": "git@github.com:brenocastrocardoso/HA_Assist_Custom_Integration.git",
+  "config_flow": true,
+  "requirements": [],
+  "codeowners": [],
+  "iot_class": "local_push"
+}

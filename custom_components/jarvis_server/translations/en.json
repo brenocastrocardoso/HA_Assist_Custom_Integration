@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "External Conversation Agent",
+        "description": "Configure the external server that will handle Assist text.",
+        "data": {
+          "name": "Name",
+          "base_url": "Server base URL",
+          "api_key": "API key (optional)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This integration is already configured."
+    }
+  }
+}
